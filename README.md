@@ -1,23 +1,12 @@
-# Canonical Urth map-imagery pipeline: XCF layers to atlas PNGs for urth-atlas.
+# Urth Imagery
 
-Reads GIMP sources from [urth-rp/urthmaps](https://github.com/urth-rp/urthmaps)
-(read-only — that repo needs no changes), exports the mapped layers
-headlessly, and commits PNGs to `atlas/` + `assets/`. urth-atlas pulls
-`atlas/*.png` via its `map-imagery.yml` workflow.
+The map artwork pipeline for Urth Atlas.
 
-| XCF layer              | atlas file                | atlas use              |
-|------------------------|---------------------------|------------------------|
-| Labels/Cities          | atlas/cities.png          | city markers           |
-| Labels/Sub-National    | atlas/subnational.png     | subnational markers    |
-| Political              | atlas/blank-political.png | base political map     |
-| Labels/National        | atlas/national.png        | nation markers         |
-| Ocean                  | atlas/ocean.png           | ocean base             |
+It reads the official GIMP map sources (read-only — those files never move
+and need no changes), exports the layers the Atlas displays — political
+base, ocean, cities, subnational borders, and nation labels — and publishes
+them where the Atlas picks them up automatically.
 
-Triggers: daily schedule (picks up upstream map patches), manual
-`workflow_dispatch` (first seed + re-runs), and `workflow_call` so
-urth-rp/urthmaps — or anyone — can invoke the export on their own events.
-
-Tooling lives in [xcf-git-sync](https://github.com/EmjayBot/xcf-git-sync).
-
-Local test: pip install "git+https://github.com/EmjayBot/xcf-git-sync.git"
-  xcf-git-sync --config xcf-sync.yaml --once
+It runs every day, so official map updates reach the Atlas on their own,
+plus a manual run button for re-runs. The Atlas is notified after every
+successful sync.
