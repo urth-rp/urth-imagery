@@ -1,0 +1,139 @@
+# Canonical Urth map-imagery pipeline.
+#
+# Reads GIMP sources from urth-rp/urthmaps (read-only — that repo needs no
+# changes), exports the mapped layers with headless GIMP 3, and commits the
+# PNGs back into THIS repo. urth-atlas pulls `atlas/*.png` (see its
+# `map-imagery.yml`).
+#
+# | XCF layer              | atlas file                | atlas use              |
+# |------------------------|---------------------------|------------------------|
+# | Labels/Cities          | atlas/cities.png          | city markers           |
+# | Labels/Sub-National    | atlas/subnational.png     | subnational markers    |
+# | Political              | atlas/blank-political.png | base political map     |
+# | Labels/National        | atlas/national.png        | nation markers         |
+# | Ocean                  | atlas/ocean.png           | ocean base             |
+#
+# Triggers: daily schedule (upstream map patches), manual dispatch (first
+# seed + re-runs), and workflow_call so urth-rp/urthmaps can invoke the
+# export on its own push events (pass a newer `ref`).
+
+name: xcf-sync
+on:
+  schedule:
+    - cron: "0 6 * * *" # daily: upstream map patches are infrequent
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: "urthmaps git ref to export"
+        default: "main"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: xcf-sync-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out this repo (imagery store)
+        uses: actions/checkout@v4
+        with:
+          path: pipeline
+
+      - name: Check out map sources (read-only)
+        uses: actions/checkout@v4
+        with:
+          repository: urth-rp/urthmaps
+          ref: ${{ inputs.ref || 'main' }}
+          path: source
+          sparse-checkout: maps/source
+          sparse-checkout-cone-mode: false
+
+      - name: Install GIMP 3 (Flatpak, official builds)
+        # NOTE: the Flatpak ships no gimp-console binary, so we drive the
+        # GUI binary headless with --no-interface (xcf-git-sync picks that
+        # flag automatically for non-2.10 builds).
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q flatpak
+          sudo flatpak remote-add --if-not-exists flathub \
+            https://flathub.org/repo/flathub.flatpakrepo
+          sudo flatpak install -y flathub org.gimp.GIMP
+          if flatpak run org.gimp.GIMP --no-interface --version >/dev/null 2>&1; then
+            echo "GIMP_BIN=flatpak run org.gimp.GIMP" >> "$GITHUB_ENV"
+          else
+            echo "headless flatpak GIMP failed; trying xvfb"
+            sudo apt-get install -y -q xvfb
+            echo "GIMP_BIN=xvfb-run -a flatpak run org.gimp.GIMP" >> "$GITHUB_ENV"
+          fi
+          echo "Using: $GIMP_BIN"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install xcf-git-sync
+        run: pip install "git+https://github.com/EmjayBot/xcf-git-sync.git"
+
+      - name: Export layers
+        # --no-only-visible: the 5 watched layers export by NAME even when
+        # hidden in the working XCF (artists often hide layers mid-edit).
+        working-directory: pipeline
+        run: >
+          xcf-git-sync
+          --xcf ../source/maps/source/urth.xcf --repo . --out assets/xcf_layers --once
+          --include "National,Cities,Sub-National,Political,Ocean"
+          --no-only-visible
+          --gimp-bin "$GIMP_BIN"
+          --timeout 600
+
+      - name: Map to atlas filenames
+        working-directory: pipeline
+        run: |
+          mkdir -p atlas
+          cp assets/xcf_layers/urth/Labels/Cities.png        atlas/cities.png
+          cp assets/xcf_layers/urth/Labels/Sub-National.png  atlas/subnational.png
+          cp assets/xcf_layers/urth/Political.png            atlas/blank-political.png
+          cp assets/xcf_layers/urth/Labels/National.png      atlas/national.png
+          cp assets/xcf_layers/urth/Ocean.png                atlas/ocean.png
+          ls -la atlas
+
+      - name: Commit PNGs back
+        id: commit
+        working-directory: pipeline
+        run: |
+          git config user.name "xcf-sync-bot"
+          git config user.email "xcf-sync-bot@users.noreply.github.com"
+          git add atlas assets/xcf_layers
+          git diff --cached --quiet && echo "No layer changes." || {
+            git commit -m "auto: sync layers from urth-rp/urthmaps maps/source/urth.xcf"
+            git push
+            echo "pushed=true" >> "$GITHUB_OUTPUT"
+          }
+
+      # Tell urth-atlas new imagery is ready (needs ATLAS_DISPATCH_TOKEN:
+      # a classic PAT with `public_repo` scope stored as a repo secret).
+      # NOTE: `secrets.*` is not allowed in `if:` expressions, so the
+      # presence check lives inside the script via $ATLAS_DISPATCH_TOKEN.
+      - name: Notify urth-atlas
+        if: steps.commit.outputs.pushed == 'true'
+        env:
+          ATLAS_DISPATCH_TOKEN: ${{ secrets.ATLAS_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$ATLAS_DISPATCH_TOKEN" ]; then
+            echo "No ATLAS_DISPATCH_TOKEN secret; skipping notify."
+            exit 0
+          fi
+          curl -fSL -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $ATLAS_DISPATCH_TOKEN" \
+            https://api.github.com/repos/urth-rp/urth-atlas/dispatches \
+            -d '{"event_type":"imagery-update"}' \
+            || echo "dispatch failed (atlas transfer pending?) — imagery is committed regardless."

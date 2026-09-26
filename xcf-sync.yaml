@@ -1,0 +1,11 @@
+# xcf-sync config for urth-imagery (local runs).
+# CI exports from a read-only checkout of urth-rp/urthmaps instead —
+# point xcf: at a local copy of maps/source/urth.xcf to test.
+watch:
+  xcf: ./urth.xcf
+  repo: .
+  out: ./assets/xcf_layers
+  auto_push: false
+  only_visible: true
+  timeout: 600
+  include: "National,Cities,Sub-National,Political,Ocean"
